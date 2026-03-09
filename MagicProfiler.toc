@@ -9,6 +9,7 @@
 ## X-eMail: neotron@gmail.com
 ## X-Date: @project-date-integer@
 ## OptionalDeps: Ace3, LibDataBroker-1.1, LibQTip-1.0
+## SavedVariables: MagicProfilerDB
 
 embeds.xml
 MagicProfiler.lua

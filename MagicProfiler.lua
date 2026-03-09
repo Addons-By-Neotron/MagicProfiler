@@ -16,35 +16,40 @@ local numAddons = 0
 local profilerAvailable = false
 
 -- Throttled memory updates
-local lastMemUpdate = 0
 local MEM_UPDATE_INTERVAL = 10
+
+local lastMemUpdate = 0
 
 -- Timing
 local LDB_SAMPLE_INTERVAL = 3
+
 local sampleInterval = 3
 local sampleTimer = nil
 
 -- Tooltip state
+local TOOLTIP_INTERVAL = 5
+local TOP_N = 20
+
 local tooltip
 local tooltipAnchor = nil
 local tooltipTimer = nil
-local TOOLTIP_INTERVAL = 5
-local TOP_N = 20
 
 -- Tooltip sorting helper
 local sortedAddons = {}
 
 -- Top window state
+local TOP_ROW_HEIGHT = 18
+local TOP_FRAME_WIDTH = 650
+local TOP_MIN_ROWS = 5
+local TOP_MAX_ROWS = 50
+local TOP_VISIBLE_ROWS_DEFAULT = 25
+
 local topFrame
 local topRows = {}
 local topSortColumn = "cpuCurrent"
 local topSortReversed = false
 local topTimer = nil
-local TOP_ROW_HEIGHT = 18
-local TOP_VISIBLE_ROWS = 25
-local TOP_FRAME_WIDTH = 650
-local TOP_MIN_ROWS = 5
-local TOP_MAX_ROWS = 50
+local topVisibleRows = TOP_VISIBLE_ROWS_DEFAULT
 local topSortedAddons = {}
 
 -- Top window column layout
@@ -143,6 +148,13 @@ local function RestartSampleTimer(interval)
    sampleTimer = mod:ScheduleRepeatingTimer(UpdateSample, interval)
 end
 
+function mod:OnInitialize()
+   MagicProfilerDB = MagicProfilerDB or {}
+   if MagicProfilerDB.sampleInterval then
+      sampleInterval = MagicProfilerDB.sampleInterval
+   end
+end
+
 function mod:OnEnable()
    UpdateSample()
    RestartSampleTimer(LDB_SAMPLE_INTERVAL)
@@ -234,6 +246,7 @@ local function CreateTopControls()
       btn.interval = interval
       btn:SetScript("OnClick", function(self)
          sampleInterval = self.interval
+         MagicProfilerDB.sampleInterval = sampleInterval
          RestartSampleTimer(sampleInterval)
          if topTimer then
             mod:CancelTimer(topTimer)
@@ -367,7 +380,7 @@ local function CreateTopScrollArea()
       FauxScrollFrame_OnVerticalScroll(self, offset, TOP_ROW_HEIGHT, function() UpdateTopWindow() end)
    end)
 
-   for i = 1, TOP_VISIBLE_ROWS do
+   for i = 1, topVisibleRows do
       local row = CreateFrame("Frame", nil, topFrame)
       row:SetSize(TOP_FRAME_WIDTH - 36, TOP_ROW_HEIGHT)
       row:SetPoint("TOPLEFT", 10, DATA_Y - (i - 1) * TOP_ROW_HEIGHT)
@@ -425,14 +438,14 @@ UpdateTopWindow = function()
 
    -- Update scroll
    local totalAddons = #topSortedAddons
-   FauxScrollFrame_Update(topFrame.scrollFrame, totalAddons, TOP_VISIBLE_ROWS, TOP_ROW_HEIGHT)
+   FauxScrollFrame_Update(topFrame.scrollFrame, totalAddons, topVisibleRows, TOP_ROW_HEIGHT)
    local offset = FauxScrollFrame_GetOffset(topFrame.scrollFrame)
 
    local appCurrent = GetAppTime(Enum.AddOnProfilerMetric.RecentAverageTime)
    local appSession = GetAppTime(Enum.AddOnProfilerMetric.SessionAverageTime)
 
    -- Render visible rows
-   for i = 1, TOP_VISIBLE_ROWS do
+   for i = 1, topVisibleRows do
       local row = topRows[i]
       local idx = offset + i
       if idx <= totalAddons then
@@ -484,8 +497,17 @@ end
 
 local function CreateTopFrame()
    local f = CreateFrame("Frame", "MagicProfilerTopFrame", UIParent, "BackdropTemplate")
-   f:SetSize(TOP_FRAME_WIDTH, 70 + TOP_VISIBLE_ROWS * TOP_ROW_HEIGHT + 30)
-   f:SetPoint("CENTER")
+   local db = MagicProfilerDB
+   local savedW = db.width or TOP_FRAME_WIDTH
+   local savedH = db.height or (70 + topVisibleRows * TOP_ROW_HEIGHT + 30)
+   local available = savedH - 70 - 30
+   topVisibleRows = max(TOP_MIN_ROWS, floor(available / TOP_ROW_HEIGHT))
+   f:SetSize(savedW, savedH)
+   if db.point then
+      f:SetPoint(db.point, UIParent, db.relPoint, db.x, db.y)
+   else
+      f:SetPoint("CENTER")
+   end
    f:SetMovable(true)
    f:SetResizable(true)
    f:SetResizeBounds(
@@ -494,9 +516,23 @@ local function CreateTopFrame()
    )
    f:EnableMouse(true)
    f:SetClampedToScreen(true)
+   local function SaveFrameLayout()
+      local db = MagicProfilerDB
+      local point, _, relPoint, x, y = f:GetPoint()
+      db.point = point
+      db.relPoint = relPoint
+      db.x = x
+      db.y = y
+      db.width = f:GetWidth()
+      db.height = f:GetHeight()
+   end
+
    f:RegisterForDrag("LeftButton")
    f:SetScript("OnDragStart", f.StartMoving)
-   f:SetScript("OnDragStop", f.StopMovingOrSizing)
+   f:SetScript("OnDragStop", function(self)
+      self:StopMovingOrSizing()
+      SaveFrameLayout()
+   end)
    f:SetBackdrop({
       bgFile = "Interface/Tooltips/UI-Tooltip-Background",
       edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
@@ -542,15 +578,16 @@ local function CreateTopFrame()
    end)
    grip:SetScript("OnMouseUp", function()
       f:StopMovingOrSizing()
+      SaveFrameLayout()
    end)
 
    f:SetScript("OnSizeChanged", function(self, w, h)
       -- Recalculate visible rows based on new height
       local available = h - 70 - 30  -- header area and status bar
-      TOP_VISIBLE_ROWS = max(TOP_MIN_ROWS, floor(available / TOP_ROW_HEIGHT))
+      topVisibleRows = max(TOP_MIN_ROWS, floor(available / TOP_ROW_HEIGHT))
 
       -- Create new rows if needed
-      for i = #topRows + 1, TOP_VISIBLE_ROWS do
+      for i = #topRows + 1, topVisibleRows do
          local row = CreateFrame("Frame", nil, self)
          row:SetSize(TOP_FRAME_WIDTH - 36, TOP_ROW_HEIGHT)
          row:SetPoint("TOPLEFT", 10, DATA_Y - (i - 1) * TOP_ROW_HEIGHT)
@@ -578,7 +615,7 @@ local function CreateTopFrame()
       end
 
       -- Hide extra rows
-      for i = TOP_VISIBLE_ROWS + 1, #topRows do
+      for i = topVisibleRows + 1, #topRows do
          topRows[i]:Hide()
       end
 
@@ -591,8 +628,21 @@ local function CreateTopFrame()
    return f
 end
 
+local function DismissTooltip()
+   if tooltipTimer then
+      mod:CancelTimer(tooltipTimer)
+      tooltipTimer = nil
+   end
+   if tooltip then
+      QTIP:Release(tooltip)
+      tooltip = nil
+   end
+   tooltipAnchor = nil
+end
+
 ShowTopWindow = function()
    if not topFrame then
+      DismissTooltip()
       CreateTopFrame()
       CreateTopControls()
       CreateTopHeaders()
@@ -602,6 +652,7 @@ ShowTopWindow = function()
    elseif topFrame:IsShown() then
       topFrame:Hide()
    else
+      DismissTooltip()
       topFrame:Show()
    end
 end
@@ -758,6 +809,7 @@ local dataObj = LDB:NewDataObject("Magic Profiler", {
    end,
 
    OnEnter = function(frame)
+      if topFrame and topFrame:IsShown() then return end
       if tooltip then
          QTIP:Release(tooltip)
       end
