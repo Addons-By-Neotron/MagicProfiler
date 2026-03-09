@@ -203,8 +203,12 @@ local sortFuncs = {
 local function CreateTopControls()
    local f = topFrame
 
+   f.totalMem = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+   f.totalMem:SetPoint("TOPRIGHT", -10, -35)
+   f.totalMem:SetText("")
+
    f.totalCPU = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-   f.totalCPU:SetPoint("TOPRIGHT", -10, -35)
+   f.totalCPU:SetPoint("RIGHT", f.totalMem, "LEFT", -15, 0)
    f.totalCPU:SetText("Total: 0%")
 
    local prevBtn
@@ -305,19 +309,26 @@ local function CreateTopHeaders()
       btn:SetPoint("TOPLEFT", xOffset, HEADER_Y)
 
       btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-      btn.text:SetPoint("LEFT")
       btn.text:SetText(col.label)
       btn.text:SetTextColor(1, 0.82, 0)
 
       btn.arrowUp = btn:CreateTexture(nil, "OVERLAY")
       btn.arrowUp:SetTexture("Interface\\Buttons\\Arrow-Up-Up")
       btn.arrowUp:SetSize(10, 10)
-      btn.arrowUp:SetPoint("LEFT", btn.text, "RIGHT", 4, 4)
 
       btn.arrowDown = btn:CreateTexture(nil, "OVERLAY")
       btn.arrowDown:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
       btn.arrowDown:SetSize(10, 10)
-      btn.arrowDown:SetPoint("LEFT", btn.text, "RIGHT", 4, -6)
+
+      if col.justify == "RIGHT" then
+         btn.text:SetPoint("RIGHT")
+         btn.arrowUp:SetPoint("RIGHT", btn.text, "LEFT", -2, 4)
+         btn.arrowDown:SetPoint("RIGHT", btn.text, "LEFT", -2, -6)
+      else
+         btn.text:SetPoint("LEFT")
+         btn.arrowUp:SetPoint("LEFT", btn.text, "RIGHT", 4, 4)
+         btn.arrowDown:SetPoint("LEFT", btn.text, "RIGHT", 4, -6)
+      end
 
       btn:SetHighlightTexture("Interface/QuestFrame/UI-QuestTitleHighlight", "ADD")
 
@@ -396,10 +407,12 @@ UpdateTopWindow = function()
    -- Refresh cached CPU metrics
    RefreshCPUMetrics()
 
-   -- Build full addon list
+   -- Build list of loaded addons only
    wipe(topSortedAddons)
    for i = 1, numAddons do
-      topSortedAddons[i] = i
+      if C_AddOns.IsAddOnLoaded(i) then
+         topSortedAddons[#topSortedAddons + 1] = i
+      end
    end
 
    -- Sort
@@ -456,10 +469,17 @@ UpdateTopWindow = function()
       end
    end
 
-   -- Update total CPU and status
+   -- Update total CPU, total memory, and status
    local totalPct = GetOverallPct(Enum.AddOnProfilerMetric.RecentAverageTime)
-   topFrame.totalCPU:SetText(format("Total: %s", FormatPct(totalPct)))
-   topFrame.statusBar:SetText(format("%d addons loaded", totalAddons))
+   topFrame.totalCPU:SetText(format("CPU: %s", FormatPct(totalPct)))
+
+   local totalKB = 0
+   for _, addonIdx in ipairs(topSortedAddons) do
+      totalKB = totalKB + (memUsage[addonIdx] or 0)
+   end
+   topFrame.totalMem:SetText(format("Mem: %s", FormatMemory(totalKB)))
+
+   topFrame.statusBar:SetText(format("%d / %d addons loaded", #topSortedAddons, numAddons))
 end
 
 local function CreateTopFrame()
@@ -489,7 +509,7 @@ local function CreateTopFrame()
 
    f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
    f.title:SetPoint("TOPLEFT", 10, -8)
-   f.title:SetText("MagicProfiler")
+   f.title:SetText("Magic Profiler")
 
    f.closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
    f.closeBtn:SetPoint("TOPRIGHT", -2, -2)
@@ -578,8 +598,8 @@ ShowTopWindow = function()
       CreateTopHeaders()
       CreateTopScrollArea()
       CreateTopStatusBar()
-   end
-   if topFrame:IsShown() then
+      UpdateTopWindow()
+   elseif topFrame:IsShown() then
       topFrame:Hide()
    else
       topFrame:Show()
@@ -608,7 +628,7 @@ local function FillTooltip()
       tooltip:SetColumnLayout(2, "LEFT", "RIGHT")
 
       y = tooltip:AddHeader()
-      tooltip:SetCell(y, 1, "|cffffffffMagicProfiler|r", "LEFT", 2)
+      tooltip:SetCell(y, 1, "|cffffffffAddon CPU Usage|r", "LEFT", 2)
 
       tooltip:AddLine(" ")
       y = tooltip:AddLine()
@@ -649,7 +669,7 @@ local function FillTooltip()
       tooltip:SetColumnLayout(3, "LEFT", "RIGHT", "RIGHT")
 
       y = tooltip:AddHeader()
-      tooltip:SetCell(y, 1, "|cffffffffMagicProfiler|r", "LEFT", 3)
+      tooltip:SetCell(y, 1, "|cffffffffAddon CPU Usage|r", "LEFT", 3)
 
       local totalPct = GetOverallPct(Enum.AddOnProfilerMetric.RecentAverageTime)
 
@@ -725,7 +745,7 @@ end
 -- LDB data object
 ----------------------------------------------------------------
 
-local dataObj = LDB:NewDataObject("MagicProfiler", {
+local dataObj = LDB:NewDataObject("Magic Profiler", {
    type = "data source",
    icon = "Interface\\Icons\\INV_Gizmo_02",
    label = "CPU",
