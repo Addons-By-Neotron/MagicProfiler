@@ -23,3 +23,11 @@ L["Profiles"] = true
 -- LDB hints
 L["Left-click: Open Top window"] = true
 L["Right-click: Options"] = true
+
+-- Command help / options description
+L["Commands"] = true
+L["Available commands:"] = true
+L["/profiler toggle  — show/hide the Top window"] = true
+L["/profiler config  — open settings"] = true
+L["/profiler snapshot  — reload and capture on-load CPU usage"] = true
+L["Load snapshot is disabled. Enable it in options first."] = true

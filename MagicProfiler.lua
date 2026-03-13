@@ -4,7 +4,8 @@ local QTIP = LibStub("LibQTip-1.0")
 local AceConfigDialog = LibStub("AceConfigDialog-3.0")
 local AceConfigRegistry = LibStub("AceConfig-3.0")
 
-local mod = LibStub("AceAddon-3.0"):NewAddon("MagicProfiler", "AceTimer-3.0", "AceEvent-3.0", "LibMagicUtil-1.0")
+local mod = LibStub("AceAddon-3.0"):NewAddon("MagicProfiler", "AceConsole-3.0", "AceTimer-3.0", "AceEvent-3.0", "LibMagicUtil-1.0")
+LibStub("LibLogger-1.0"):Embed(mod)
 
 ----------------------------------------------------------------
 -- State
@@ -309,6 +310,19 @@ local function BuildOptions()
                end
             end,
          },
+         cmdHeader = {
+            type = "header",
+            name = L["Commands"],
+            order = 10,
+         },
+         cmdDesc = {
+            type = "description",
+            name = L["/profiler toggle  — show/hide the Top window"] .. "\n"
+                .. L["/profiler config  — open settings"] .. "\n"
+                .. L["/profiler snapshot  — reload and capture on-load CPU usage"],
+            order = 11,
+            fontSize = "medium",
+         },
       },
    }
    options.profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(mod.db)
@@ -347,6 +361,28 @@ function mod:OnEnable()
       mod:ScheduleTimer(TakeEarlySnapshot, 1)
       mod:ScheduleTimer(TakeLateSnapshot, 5)
    end
+   mod:RegisterChatCommand("profiler", function(input)
+      local cmd = strtrim(input or ""):lower()
+      if cmd == "toggle" then
+         ShowTopWindow()
+      elseif cmd == "config" then
+         mod:InterfaceOptionsFrame_OpenToCategory(mod.optionsEnd)
+         mod:InterfaceOptionsFrame_OpenToCategory(mod.optionsMain)
+      elseif cmd == "snapshot" then
+         if not mod.db.profile.enableSnapshot then
+            mod:info(L["Load snapshot is disabled. Enable it in options first."])
+            return
+         end
+         mod.db.char.reloadInitiatedAt = GetServerTime()
+         ReloadUI()
+      else
+         mod:info(L["Available commands:"])
+         mod:info(L["/profiler toggle  — show/hide the Top window"])
+         mod:info(L["/profiler config  — open settings"])
+         mod:info(L["/profiler snapshot  — reload and capture on-load CPU usage"])
+      end
+   end)
+
    RestartSampleTimer(mod.db.profile.ldbInterval)
    if reloadSeconds and mod.db.profile.enableSnapshot then
       mod:ScheduleTimer(function()
