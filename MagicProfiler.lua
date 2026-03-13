@@ -1,6 +1,10 @@
-local mod = LibStub("AceAddon-3.0"):NewAddon("MagicProfiler", "AceTimer-3.0", "AceEvent-3.0")
+local L = LibStub("AceLocale-3.0"):GetLocale("MagicProfiler")
 local LDB = LibStub("LibDataBroker-1.1")
 local QTIP = LibStub("LibQTip-1.0")
+local AceConfigDialog = LibStub("AceConfigDialog-3.0")
+local AceConfigRegistry = LibStub("AceConfig-3.0")
+
+local mod = LibStub("AceAddon-3.0"):NewAddon("MagicProfiler", "AceTimer-3.0", "AceEvent-3.0")
 
 ----------------------------------------------------------------
 -- State
@@ -15,6 +19,22 @@ local cpuSession = {}    -- SessionAverageTime ms per addon index (cached for so
 local numAddons = 0
 local profilerAvailable = false
 
+local defaults = {
+   profile = {
+      sampleInterval = 3,
+      topN = 20,
+   },
+   char = {
+      reloadInitiatedAt = nil,
+      width = nil,
+      height = nil,
+      point = nil,
+      relPoint = nil,
+      x = nil,
+      y = nil,
+   },
+}
+
 -- Throttled memory updates
 local MEM_UPDATE_INTERVAL = 10
 
@@ -28,7 +48,6 @@ local sampleTimer = nil
 
 -- Tooltip state
 local TOOLTIP_INTERVAL = 5
-local TOP_N = 20
 
 local tooltip
 local tooltipAnchor = nil
@@ -206,19 +225,86 @@ local function RestartSampleTimer(interval)
    sampleTimer = mod:ScheduleRepeatingTimer(UpdateSample, interval)
 end
 
-function mod:OnInitialize()
-   MagicProfilerDB = MagicProfilerDB or {}
-   if MagicProfilerDB.sampleInterval then
-      sampleInterval = MagicProfilerDB.sampleInterval
+----------------------------------------------------------------
+-- Options helpers
+----------------------------------------------------------------
+
+local options = {}
+
+local function BuildOptions()
+   options.general = {
+      type = "group",
+      name = L["Magic Profiler"],
+      args = {
+         desc = {
+            type = "description",
+            name = L["Magic Profiler is an LDB data source that displays addon CPU and memory usage. It requires an LDB display addon such as Button Bin, ChocolateBar, or Titan Panel."],
+            order = 0,
+            fontSize = "medium",
+         },
+         sampleInterval = {
+            type = "range",
+            name = L["Sample interval"],
+            desc = L["How often to sample and update profiler data, in seconds."],
+            min = 1, max = 10, step = 1,
+            width = "full",
+            order = 1,
+            get = function() return mod.db.profile.sampleInterval end,
+            set = function(_, val)
+               mod.db.profile.sampleInterval = val
+               sampleInterval = val
+               RestartSampleTimer(val)
+               for _, b in ipairs(intervalButtons) do
+                  if b.interval == val then
+                     b:SetBackdropColor(0.2, 0.4, 0.8, 0.8)
+                  else
+                     b:SetBackdropColor(0.1, 0.1, 0.1, 0.8)
+                  end
+               end
+            end,
+         },
+         topN = {
+            type = "range",
+            name = L["Tooltip entries"],
+            desc = L["Maximum number of addons to show in the LDB tooltip."],
+            min = 5, max = 50, step = 5,
+            width = "full",
+            order = 2,
+            get = function() return mod.db.profile.topN end,
+            set = function(_, val)
+               mod.db.profile.topN = val
+            end,
+         },
+      },
+   }
+   options.profiles = LibStub("AceDBOptions-3.0"):GetOptionsTable(mod.db)
+end
+
+function mod:OptReg(optname, tbl, dispname)
+   if dispname then
+      optname = "Magic Profiler" .. optname
+      AceConfigRegistry:RegisterOptionsTable(optname, tbl)
+      return AceConfigDialog:AddToBlizOptions(optname, dispname, "Magic Profiler")
+   else
+      AceConfigRegistry:RegisterOptionsTable(optname, tbl)
+      return AceConfigDialog:AddToBlizOptions(optname, "Magic Profiler")
    end
+end
+
+function mod:OnInitialize()
+   self.db = LibStub("AceDB-3.0"):New("MagicProfilerDB", defaults, "Default")
+   sampleInterval = self.db.profile.sampleInterval
    -- Compute reload duration if this load was triggered by "Create Snapshot"
-   if MagicProfilerDB.reloadInitiatedAt then
-      local delta = GetServerTime() - MagicProfilerDB.reloadInitiatedAt
+   if self.db.char.reloadInitiatedAt then
+      local delta = GetServerTime() - self.db.char.reloadInitiatedAt
       if delta >= 0 and delta < 300 then
          reloadSeconds = delta
       end
-      MagicProfilerDB.reloadInitiatedAt = nil
+      self.db.char.reloadInitiatedAt = nil
    end
+   BuildOptions()
+   self.optionsMain = self:OptReg("Magic Profiler", options.general)
+   self.optionsEnd = self:OptReg(": Profiles", options.profiles, L["Profiles"])
 end
 
 function mod:OnEnable()
@@ -343,7 +429,7 @@ local function CreateTopControls()
       btn.interval = interval
       btn:SetScript("OnClick", function(self)
          sampleInterval = self.interval
-         MagicProfilerDB.sampleInterval = sampleInterval
+         mod.db.profile.sampleInterval = sampleInterval
          RestartSampleTimer(sampleInterval)
          if topTimer then
             mod:CancelTimer(topTimer)
@@ -383,6 +469,8 @@ local function CreateTopControls()
    memBtn.text = memBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
    memBtn.text:SetPoint("CENTER")
    memBtn.text:SetText("Refresh Mem")
+
+   f.memBtn = memBtn
 
    memBtn:SetScript("OnClick", function()
       RefreshMemory()
@@ -464,7 +552,7 @@ local function CreateTopControls()
    createSnapBtn.text:SetText("Create Snapshot")
 
    createSnapBtn:SetScript("OnClick", function()
-      MagicProfilerDB.reloadInitiatedAt = GetServerTime()
+      mod.db.char.reloadInitiatedAt = GetServerTime()
       ReloadUI()
    end)
    createSnapBtn:SetScript("OnEnter", function(self)
@@ -648,10 +736,12 @@ UpdateTopWindow = function()
    if snapshotMode then
       -- ── Snapshot mode ──────────────────────────────────────────
 
-      -- Show/hide widget setsnsp
+      -- Show/hide widget sets
       topFrame.snapshotInfoBar:Show()
       topFrame.totalCPU:Hide()
       topFrame.totalMem:Hide()
+      topFrame.memBtn:Hide()
+      for _, b in ipairs(intervalButtons) do b:Hide() end
       for _, b in ipairs(headerButtons) do b:Hide() end
       for _, b in ipairs(snapshotHeaderButtons) do b:Show() end
 
@@ -738,6 +828,8 @@ UpdateTopWindow = function()
       topFrame.snapshotInfoBar:Hide()
       topFrame.totalCPU:Show()
       topFrame.totalMem:Show()
+      topFrame.memBtn:Show()
+      for _, b in ipairs(intervalButtons) do b:Show() end
       for _, b in ipairs(headerButtons) do b:Show() end
       for _, b in ipairs(snapshotHeaderButtons) do b:Hide() end
 
@@ -822,7 +914,7 @@ end
 
 local function CreateTopFrame()
    local f = CreateFrame("Frame", "MagicProfilerTopFrame", UIParent, "BackdropTemplate")
-   local db = MagicProfilerDB
+   local db = mod.db.char
    local savedW = db.width or TOP_FRAME_WIDTH
    local savedH = db.height or (70 + topVisibleRows * TOP_ROW_HEIGHT + 30)
    local available = savedH - 70 - 30
@@ -842,7 +934,7 @@ local function CreateTopFrame()
    f:EnableMouse(true)
    f:SetClampedToScreen(true)
    local function SaveFrameLayout()
-      local db = MagicProfilerDB
+      local db = mod.db.char
       local point, _, relPoint, x, y = f:GetPoint()
       db.point = point
       db.relPoint = relPoint
@@ -1049,7 +1141,8 @@ local function FillTooltip()
       tooltip:SetCell(y, 2, "|cff999999Memory|r", "RIGHT")
       tooltip:AddSeparator(1)
 
-      local count = min(#sortedAddons, TOP_N)
+      local topN = mod.db.profile.topN
+      local count = min(#sortedAddons, topN)
       for j = 1, count do
          local i = sortedAddons[j]
          local name = addonNames[i] or ""
@@ -1060,9 +1153,9 @@ local function FillTooltip()
          tooltip:SetCell(y, 2, format("|cffffffff%s|r", FormatMemory(mem)), "RIGHT")
       end
 
-      if #sortedAddons > TOP_N then
+      if #sortedAddons > topN then
          y = tooltip:AddLine()
-         tooltip:SetCell(y, 1, format("|cff808080... and %d more|r", #sortedAddons - TOP_N), "LEFT", 2)
+         tooltip:SetCell(y, 1, format("|cff808080... and %d more|r", #sortedAddons - topN), "LEFT", 2)
       end
    else
       -- CPU + Memory mode: 3 columns, sorted by CPU
@@ -1097,7 +1190,8 @@ local function FillTooltip()
       tooltip:SetCell(y, 3, "|cff999999Memory|r", "RIGHT")
       tooltip:AddSeparator(1)
 
-      local count = min(#sortedAddons, TOP_N)
+      local topN = mod.db.profile.topN
+      local count = min(#sortedAddons, topN)
       for j = 1, count do
          local i = sortedAddons[j]
          local name = addonNames[i] or ""
@@ -1111,17 +1205,19 @@ local function FillTooltip()
          tooltip:SetCell(y, 3, format("|cffffffff%s|r", FormatMemory(mem)), "RIGHT")
       end
 
-      if #sortedAddons > TOP_N then
+      if #sortedAddons > topN then
          y = tooltip:AddLine()
-         tooltip:SetCell(y, 1, format("|cff808080... and %d more|r", #sortedAddons - TOP_N), "LEFT", 3)
+         tooltip:SetCell(y, 1, format("|cff808080... and %d more|r", #sortedAddons - topN), "LEFT", 3)
       end
    end
 
    tooltip:AddLine(" ")
    tooltip:AddSeparator(1)
-   y = tooltip:AddLine()
    local cols = profilerAvailable and 3 or 2
-   tooltip:SetCell(y, 1, "|cffeda55fClick:|r |cffffff00Open Top window|r", "LEFT", cols)
+   y = tooltip:AddLine()
+   tooltip:SetCell(y, 1, "|cffeda55f" .. L["Left-click: Open Top window"] .. "|r", "LEFT", cols)
+   y = tooltip:AddLine()
+   tooltip:SetCell(y, 1, "|cffeda55f" .. L["Right-click: Options"] .. "|r", "LEFT", cols)
 end
 
 local function RefreshTooltip()
@@ -1154,6 +1250,8 @@ local dataObj = LDB:NewDataObject("Magic Profiler", {
    OnClick = function(frame, button)
       if button == "LeftButton" then
          ShowTopWindow()
+      elseif button == "RightButton" then
+         AceConfigDialog:Open("Magic Profiler")
       end
    end,
 

@@ -12,4 +12,5 @@
 ## SavedVariables: MagicProfilerDB
 
 embeds.xml
+Locales.xml
 MagicProfiler.lua
