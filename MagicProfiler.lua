@@ -52,6 +52,18 @@ local topTimer = nil
 local topVisibleRows = TOP_VISIBLE_ROWS_DEFAULT
 local topSortedAddons = {}
 
+-- Snapshot state
+local cpuEarly = {}          -- ms per addon index, 1s capture
+local cpuEarlyAppTime = 0    -- app RecentAverageTime at 1s capture; 0 = profiler unavailable
+local cpuLate = {}           -- ms per addon index, 5s capture
+local cpuLateAppTime = 0     -- app RecentAverageTime at 5s capture; 0 = profiler unavailable
+local memSnapshot = {}       -- KB per addon index, 5s capture
+local snapshotTimeStr = nil  -- display string set when 5s fires, e.g. "14:32:15"
+local reloadSeconds = nil    -- integer seconds of reload duration; nil if not a timed reload
+local snapshotMode = false   -- true = Top window shows frozen snapshot view
+local snapshotSortColumn = "cpuEarly"
+local snapshotSortReversed = false
+
 -- Top window column layout
 local TOP_COLUMNS = {
    { key = "name",       label = "Addon",         width = 220, justify = "LEFT"  },
@@ -60,9 +72,19 @@ local TOP_COLUMNS = {
    { key = "memory",     label = "Memory",         width = 90,  justify = "RIGHT" },
    { key = "memDelta",   label = "Mem Delta",      width = 90,  justify = "RIGHT" },
 }
+
+local SNAPSHOT_COLUMNS = {
+   { key = "name",        label = "Addon",        width = 220, justify = "LEFT"  },
+   { key = "cpuEarly",    label = "CPU (1s)",      width = 100, justify = "RIGHT" },
+   { key = "cpuLate",     label = "CPU (5s)",      width = 100, justify = "RIGHT" },
+   { key = "memSnapshot", label = "Memory",        width = 90,  justify = "RIGHT" },
+}
+-- Total data width: 510px — fits within existing 650px frame without resizing
+
 local HEADER_Y = -55
 local DATA_Y = HEADER_Y - 22
 local headerButtons = {}
+local snapshotHeaderButtons = {}
 local ARROW_ACTIVE = 1.0
 local ARROW_INACTIVE = 0.35
 
@@ -71,7 +93,7 @@ local INTERVALS = { 1, 3, 5, 10 }
 local intervalButtons = {}
 
 -- Forward declarations
-local ShowTopWindow, UpdateTopWindow
+local ShowTopWindow, UpdateTopWindow, UpdateHeaderArrows
 
 ----------------------------------------------------------------
 -- Profiler helpers
@@ -130,6 +152,42 @@ local function RefreshCPUMetrics()
    end
 end
 
+local function TakeEarlySnapshot()
+   if not (C_AddOnProfiler and C_AddOnProfiler.IsEnabled()) then return end
+   local metric = Enum.AddOnProfilerMetric.RecentAverageTime
+   cpuEarlyAppTime = C_AddOnProfiler.GetApplicationMetric(metric) or 0
+   if cpuEarlyAppTime == 0 then return end
+   for i = 1, numAddons do
+      cpuEarly[i] = C_AddOnProfiler.GetAddOnMetric(addonNames[i], metric) or 0
+   end
+end
+
+local function TakeLateSnapshot()
+   -- CPU capture (skipped if profiler unavailable)
+   if C_AddOnProfiler and C_AddOnProfiler.IsEnabled() then
+      local metric = Enum.AddOnProfilerMetric.RecentAverageTime
+      cpuLateAppTime = C_AddOnProfiler.GetApplicationMetric(metric) or 0
+      if cpuLateAppTime > 0 then
+         for i = 1, numAddons do
+            cpuLate[i] = C_AddOnProfiler.GetAddOnMetric(addonNames[i], metric) or 0
+         end
+      end
+   end
+
+   -- Memory capture (always runs)
+   UpdateAddOnMemoryUsage()
+   for i = 1, numAddons do
+      memSnapshot[i] = GetAddOnMemoryUsage(i)
+   end
+
+   snapshotTimeStr = date("%H:%M:%S")
+
+   -- Enable the [Snap] toggle button now that data is ready
+   if topFrame and topFrame.snapToggleBtn then
+      topFrame.snapToggleBtn:Enable()
+   end
+end
+
 local function UpdateSample()
    local newCount = C_AddOns.GetNumAddOns()
    if newCount ~= numAddons then
@@ -153,11 +211,35 @@ function mod:OnInitialize()
    if MagicProfilerDB.sampleInterval then
       sampleInterval = MagicProfilerDB.sampleInterval
    end
+   -- Compute reload duration if this load was triggered by "Create Snapshot"
+   if MagicProfilerDB.reloadInitiatedAt then
+      local delta = GetServerTime() - MagicProfilerDB.reloadInitiatedAt
+      if delta >= 0 and delta < 300 then
+         reloadSeconds = delta
+      end
+      MagicProfilerDB.reloadInitiatedAt = nil
+   end
 end
 
 function mod:OnEnable()
    UpdateSample()
+   mod:ScheduleTimer(TakeEarlySnapshot, 1)
+   mod:ScheduleTimer(TakeLateSnapshot, 5)
    RestartSampleTimer(LDB_SAMPLE_INTERVAL)
+   if reloadSeconds then
+      mod:ScheduleTimer(function()
+         ShowTopWindow()
+         snapshotMode = true
+         snapshotSortColumn = "cpuEarly"
+         snapshotSortReversed = false
+         if topFrame and topFrame.snapToggleBtn then
+            topFrame.snapToggleBtn:SetBackdropColor(0.2, 0.4, 0.8, 0.8)
+            topFrame.snapToggleBtn.text:SetText("Live")
+         end
+         UpdateHeaderArrows()
+         UpdateTopWindow()
+      end, 5.1)
+   end
 end
 
 ----------------------------------------------------------------
@@ -205,6 +287,21 @@ local sortFuncs = {
    end,
    memDelta = function(a, b)
       return (memDelta[a] or 0) > (memDelta[b] or 0)
+   end,
+}
+
+local snapshotSortFuncs = {
+   name = function(a, b)
+      return (addonNames[a] or "") < (addonNames[b] or "")
+   end,
+   cpuEarly = function(a, b)
+      return (cpuEarly[a] or 0) > (cpuEarly[b] or 0)
+   end,
+   cpuLate = function(a, b)
+      return (cpuLate[a] or 0) > (cpuLate[b] or 0)
+   end,
+   memSnapshot = function(a, b)
+      return (memSnapshot[a] or 0) > (memSnapshot[b] or 0)
    end,
 }
 
@@ -300,13 +397,93 @@ local function CreateTopControls()
    memBtn:SetScript("OnLeave", function()
       GameTooltip:Hide()
    end)
+
+   -- [Snap] toggle button
+   local snapBtn = CreateFrame("Button", nil, f, "BackdropTemplate")
+   snapBtn:SetSize(70, 20)
+   snapBtn:SetPoint("LEFT", memBtn, "RIGHT", 10, 0)
+   snapBtn:SetBackdrop({
+      bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+      edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+      tile = true, tileSize = 8, edgeSize = 8,
+      insets = { left = 2, right = 2, top = 2, bottom = 2 },
+   })
+   snapBtn:SetBackdropColor(0.1, 0.1, 0.1, 0.8)
+
+   snapBtn.text = snapBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+   snapBtn.text:SetPoint("CENTER")
+   snapBtn.text:SetText("On-Load")
+
+   snapBtn:SetScript("OnClick", function()
+      snapshotMode = not snapshotMode
+      if snapshotMode then
+         snapshotSortColumn = "cpuEarly"
+         snapshotSortReversed = false
+         snapBtn:SetBackdropColor(0.2, 0.4, 0.8, 0.8)
+         snapBtn.text:SetText("Live")
+         -- pause live timer while viewing frozen snapshot
+         if topTimer then
+            mod:CancelTimer(topTimer)
+            topTimer = nil
+         end
+      else
+         snapBtn:SetBackdropColor(0.1, 0.1, 0.1, 0.8)
+         snapBtn.text:SetText("On-Load")
+         -- restart live update timer
+         if topTimer then mod:CancelTimer(topTimer) end
+         topTimer = mod:ScheduleRepeatingTimer(UpdateTopWindow, sampleInterval)
+      end
+      UpdateHeaderArrows()
+      UpdateTopWindow()
+   end)
+   snapBtn:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_TOP")
+      GameTooltip:AddLine("Load Snapshot View")
+      GameTooltip:AddLine("Toggle between live data and the frozen load snapshot.", 1, 1, 1, true)
+      GameTooltip:Show()
+   end)
+   snapBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+   snapBtn:Disable()   -- enabled by TakeLateSnapshot once data is ready
+   f.snapToggleBtn = snapBtn
+
+   -- Create Snapshot button (triggers reload)
+   local createSnapBtn = CreateFrame("Button", nil, f, "BackdropTemplate")
+   createSnapBtn:SetSize(110, 20)
+   createSnapBtn:SetPoint("LEFT", snapBtn, "RIGHT", 4, 0)
+   createSnapBtn:SetBackdrop({
+      bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+      edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+      tile = true, tileSize = 8, edgeSize = 8,
+      insets = { left = 2, right = 2, top = 2, bottom = 2 },
+   })
+   createSnapBtn:SetBackdropColor(0.4, 0.25, 0.05, 0.9)
+
+   createSnapBtn.text = createSnapBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+   createSnapBtn.text:SetPoint("CENTER")
+   createSnapBtn.text:SetText("Create Snapshot")
+
+   createSnapBtn:SetScript("OnClick", function()
+      MagicProfilerDB.reloadInitiatedAt = GetServerTime()
+      ReloadUI()
+   end)
+   createSnapBtn:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_TOP")
+      GameTooltip:AddLine("Create Load Snapshot")
+      GameTooltip:AddLine("Reload the UI and capture load-time CPU usage for all addons.", 1, 1, 1, true)
+      GameTooltip:Show()
+   end)
+   createSnapBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
-local function UpdateHeaderArrows()
-   for _, b in ipairs(headerButtons) do
-      if b.columnKey == topSortColumn then
-         b.arrowUp:SetAlpha(topSortReversed and ARROW_ACTIVE or ARROW_INACTIVE)
-         b.arrowDown:SetAlpha(topSortReversed and ARROW_INACTIVE or ARROW_ACTIVE)
+UpdateHeaderArrows = function()
+   local buttons = snapshotMode and snapshotHeaderButtons or headerButtons
+   local col     = snapshotMode and snapshotSortColumn or topSortColumn
+   local rev     = snapshotMode and snapshotSortReversed or topSortReversed
+   for _, b in ipairs(buttons) do
+      if b.columnKey == col then
+         b.arrowUp:SetAlpha(rev and ARROW_ACTIVE or ARROW_INACTIVE)
+         b.arrowDown:SetAlpha(rev and ARROW_INACTIVE or ARROW_ACTIVE)
       else
          b.arrowUp:SetAlpha(0)
          b.arrowDown:SetAlpha(0)
@@ -370,6 +547,57 @@ local function CreateTopHeaders()
    sep:SetColorTexture(0.6, 0.6, 0.6, 0.5)
 end
 
+local function CreateSnapshotHeaders()
+   -- Note: the horizontal separator below the headers is created by CreateTopHeaders
+   -- and is frame-level (always visible). It is intentionally shared with snapshot mode.
+   local xOffset = 10
+   for i, col in ipairs(SNAPSHOT_COLUMNS) do
+      local btn = CreateFrame("Button", nil, topFrame)
+      btn:SetSize(col.width, 20)
+      btn:SetPoint("TOPLEFT", xOffset, HEADER_Y)
+
+      btn.text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+      btn.text:SetText(col.label)
+      btn.text:SetTextColor(1, 0.82, 0)
+
+      btn.arrowUp = btn:CreateTexture(nil, "OVERLAY")
+      btn.arrowUp:SetTexture("Interface\\Buttons\\Arrow-Up-Up")
+      btn.arrowUp:SetSize(10, 10)
+
+      btn.arrowDown = btn:CreateTexture(nil, "OVERLAY")
+      btn.arrowDown:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
+      btn.arrowDown:SetSize(10, 10)
+
+      if col.justify == "RIGHT" then
+         btn.text:SetPoint("RIGHT")
+         btn.arrowUp:SetPoint("RIGHT", btn.text, "LEFT", -2, 4)
+         btn.arrowDown:SetPoint("RIGHT", btn.text, "LEFT", -2, -6)
+      else
+         btn.text:SetPoint("LEFT")
+         btn.arrowUp:SetPoint("LEFT", btn.text, "RIGHT", 4, 4)
+         btn.arrowDown:SetPoint("LEFT", btn.text, "RIGHT", 4, -6)
+      end
+
+      btn:SetHighlightTexture("Interface/QuestFrame/UI-QuestTitleHighlight", "ADD")
+
+      btn.columnKey = col.key
+      btn:SetScript("OnClick", function(self)
+         if snapshotSortColumn == self.columnKey then
+            snapshotSortReversed = not snapshotSortReversed
+         else
+            snapshotSortColumn = self.columnKey
+            snapshotSortReversed = false
+         end
+         UpdateHeaderArrows()
+         UpdateTopWindow()
+      end)
+
+      btn:Hide()  -- hidden until snapshot mode is entered
+      snapshotHeaderButtons[i] = btn
+      xOffset = xOffset + col.width
+   end
+end
+
 local function CreateTopScrollArea()
    local scrollFrame = CreateFrame("ScrollFrame", "MagicProfilerScrollFrame", topFrame, "FauxScrollFrameTemplate")
    scrollFrame:SetPoint("TOPLEFT", 6, DATA_Y)
@@ -417,82 +645,179 @@ end
 UpdateTopWindow = function()
    if not topFrame or not topFrame:IsShown() then return end
 
-   -- Refresh cached CPU metrics
-   RefreshCPUMetrics()
+   if snapshotMode then
+      -- ── Snapshot mode ──────────────────────────────────────────
 
-   -- Build list of loaded addons only
-   wipe(topSortedAddons)
-   for i = 1, numAddons do
-      if C_AddOns.IsAddOnLoaded(i) then
-         topSortedAddons[#topSortedAddons + 1] = i
-      end
-   end
+      -- Show/hide widget setsnsp
+      topFrame.snapshotInfoBar:Show()
+      topFrame.totalCPU:Hide()
+      topFrame.totalMem:Hide()
+      for _, b in ipairs(headerButtons) do b:Hide() end
+      for _, b in ipairs(snapshotHeaderButtons) do b:Show() end
 
-   -- Sort
-   local cmp = sortFuncs[topSortColumn] or sortFuncs.cpuCurrent
-   if topSortReversed then
-      sort(topSortedAddons, function(a, b) return cmp(b, a) end)
-   else
-      sort(topSortedAddons, cmp)
-   end
-
-   -- Update scroll
-   local totalAddons = #topSortedAddons
-   FauxScrollFrame_Update(topFrame.scrollFrame, totalAddons, topVisibleRows, TOP_ROW_HEIGHT)
-   local offset = FauxScrollFrame_GetOffset(topFrame.scrollFrame)
-
-   local appCurrent = GetAppTime(Enum.AddOnProfilerMetric.RecentAverageTime)
-   local appSession = GetAppTime(Enum.AddOnProfilerMetric.SessionAverageTime)
-
-   -- Render visible rows
-   for i = 1, topVisibleRows do
-      local row = topRows[i]
-      local idx = offset + i
-      if idx <= totalAddons then
-         local addonIdx = topSortedAddons[idx]
-         local name = addonNames[addonIdx] or ""
-         local curPct = (cpuCurrent[addonIdx] or 0) / appCurrent * 100
-         local sesPct = (cpuSession[addonIdx] or 0) / appSession * 100
-         local mem = memUsage[addonIdx] or 0
-         local r, g, b = CPUColor(curPct)
-
-         row.cols[1]:SetText(name)
-         row.cols[1]:SetTextColor(r, g, b)
-         row.cols[2]:SetText(FormatPct(curPct))
-         row.cols[2]:SetTextColor(r, g, b)
-         row.cols[3]:SetText(FormatPct(sesPct))
-         row.cols[3]:SetTextColor(r, g, b)
-         row.cols[4]:SetText(FormatMemory(mem))
-         row.cols[4]:SetTextColor(1, 1, 1)
-
-         local delta = memDelta[addonIdx] or 0
-         if delta > 0 then
-            row.cols[5]:SetText("+" .. FormatMemory(delta))
-            row.cols[5]:SetTextColor(1, 0.4, 0.4)
-         elseif delta < 0 then
-            row.cols[5]:SetText("-" .. FormatMemory(-delta))
-            row.cols[5]:SetTextColor(0.4, 1, 0.4)
+      -- Build info bar text
+      if snapshotTimeStr then
+         if reloadSeconds then
+            topFrame.snapshotInfoBar:SetText(format("Snapshot — %s  |  Reload: ~%ds", snapshotTimeStr, reloadSeconds))
          else
-            row.cols[5]:SetText("0 KB")
-            row.cols[5]:SetTextColor(0.5, 0.5, 0.5)
+            topFrame.snapshotInfoBar:SetText(format("Snapshot — %s", snapshotTimeStr))
          end
-         row:Show()
       else
-         row:Hide()
+         topFrame.snapshotInfoBar:SetText("Snapshot not ready yet")
       end
+
+      -- Build index list: any addon with non-zero snapshot data
+      wipe(topSortedAddons)
+      for i = 1, numAddons do
+         if (cpuEarly[i] or 0) > 0 or (cpuLate[i] or 0) > 0 or (memSnapshot[i] or 0) > 0 then
+            topSortedAddons[#topSortedAddons + 1] = i
+         end
+      end
+
+      -- Sort with reversal
+      local cmp = snapshotSortFuncs[snapshotSortColumn] or snapshotSortFuncs.cpuEarly
+      if snapshotSortReversed then
+         sort(topSortedAddons, function(a, b) return cmp(b, a) end)
+      else
+         sort(topSortedAddons, cmp)
+      end
+
+      -- Update scroll
+      local totalAddons = #topSortedAddons
+      FauxScrollFrame_Update(topFrame.scrollFrame, totalAddons, topVisibleRows, TOP_ROW_HEIGHT)
+      local offset = FauxScrollFrame_GetOffset(topFrame.scrollFrame)
+
+      -- Render rows
+      for i = 1, topVisibleRows do
+         local row = topRows[i]
+         local idx = offset + i
+         if idx <= totalAddons then
+            local addonIdx = topSortedAddons[idx]
+            local name = addonNames[addonIdx] or ""
+
+            -- CPU early
+            local earlyPct = 0
+            local earlyStr = "--"
+            if cpuEarlyAppTime > 0 then
+               earlyPct = (cpuEarly[addonIdx] or 0) / cpuEarlyAppTime * 100
+               earlyStr = FormatPct(earlyPct)
+            end
+
+            -- CPU late
+            local latePct = 0
+            local lateStr = "--"
+            if cpuLateAppTime > 0 then
+               latePct = (cpuLate[addonIdx] or 0) / cpuLateAppTime * 100
+               lateStr = FormatPct(latePct)
+            end
+
+            local mem = memSnapshot[addonIdx] or 0
+            local r, g, b = CPUColor(earlyPct)
+
+            row.cols[1]:SetText(name)
+            row.cols[1]:SetTextColor(r, g, b)
+            row.cols[2]:SetText(earlyStr)
+            row.cols[2]:SetTextColor(r, g, b)
+            row.cols[3]:SetText(lateStr)
+            row.cols[3]:SetTextColor(CPUColor(latePct))
+            row.cols[4]:SetText(FormatMemory(mem))
+            row.cols[4]:SetTextColor(1, 1, 1)
+            row.cols[5]:SetText("")   -- always clear; do NOT Hide() this FontString
+            row:Show()
+         else
+            row:Hide()
+         end
+      end
+
+      topFrame.statusBar:SetText(format("%d addons in snapshot", #topSortedAddons))
+
+   else
+      -- ── Live mode ──────────────────────────────────────────────
+
+      -- Show/hide widget sets
+      topFrame.snapshotInfoBar:Hide()
+      topFrame.totalCPU:Show()
+      topFrame.totalMem:Show()
+      for _, b in ipairs(headerButtons) do b:Show() end
+      for _, b in ipairs(snapshotHeaderButtons) do b:Hide() end
+
+      -- Refresh cached CPU metrics
+      RefreshCPUMetrics()
+
+      -- Build list of loaded addons only
+      wipe(topSortedAddons)
+      for i = 1, numAddons do
+         if C_AddOns.IsAddOnLoaded(i) then
+            topSortedAddons[#topSortedAddons + 1] = i
+         end
+      end
+
+      -- Sort
+      local cmp = sortFuncs[topSortColumn] or sortFuncs.cpuCurrent
+      if topSortReversed then
+         sort(topSortedAddons, function(a, b) return cmp(b, a) end)
+      else
+         sort(topSortedAddons, cmp)
+      end
+
+      -- Update scroll
+      local totalAddons = #topSortedAddons
+      FauxScrollFrame_Update(topFrame.scrollFrame, totalAddons, topVisibleRows, TOP_ROW_HEIGHT)
+      local offset = FauxScrollFrame_GetOffset(topFrame.scrollFrame)
+
+      local appCurrent = GetAppTime(Enum.AddOnProfilerMetric.RecentAverageTime)
+      local appSession = GetAppTime(Enum.AddOnProfilerMetric.SessionAverageTime)
+
+      -- Render visible rows
+      for i = 1, topVisibleRows do
+         local row = topRows[i]
+         local idx = offset + i
+         if idx <= totalAddons then
+            local addonIdx = topSortedAddons[idx]
+            local name = addonNames[addonIdx] or ""
+            local curPct = (cpuCurrent[addonIdx] or 0) / appCurrent * 100
+            local sesPct = (cpuSession[addonIdx] or 0) / appSession * 100
+            local mem = memUsage[addonIdx] or 0
+            local r, g, b = CPUColor(curPct)
+
+            row.cols[1]:SetText(name)
+            row.cols[1]:SetTextColor(r, g, b)
+            row.cols[2]:SetText(FormatPct(curPct))
+            row.cols[2]:SetTextColor(r, g, b)
+            row.cols[3]:SetText(FormatPct(sesPct))
+            row.cols[3]:SetTextColor(r, g, b)
+            row.cols[4]:SetText(FormatMemory(mem))
+            row.cols[4]:SetTextColor(1, 1, 1)
+
+            local delta = memDelta[addonIdx] or 0
+            if delta > 0 then
+               row.cols[5]:SetText("+" .. FormatMemory(delta))
+               row.cols[5]:SetTextColor(1, 0.4, 0.4)
+            elseif delta < 0 then
+               row.cols[5]:SetText("-" .. FormatMemory(-delta))
+               row.cols[5]:SetTextColor(0.4, 1, 0.4)
+            else
+               row.cols[5]:SetText("0 KB")
+               row.cols[5]:SetTextColor(0.5, 0.5, 0.5)
+            end
+            row:Show()
+         else
+            row:Hide()
+         end
+      end
+
+      -- Update total CPU, total memory, and status
+      local totalPct = GetOverallPct(Enum.AddOnProfilerMetric.RecentAverageTime)
+      topFrame.totalCPU:SetText(format("CPU: %s", FormatPct(totalPct)))
+
+      local totalKB = 0
+      for _, addonIdx in ipairs(topSortedAddons) do
+         totalKB = totalKB + (memUsage[addonIdx] or 0)
+      end
+      topFrame.totalMem:SetText(format("Mem: %s", FormatMemory(totalKB)))
+
+      topFrame.statusBar:SetText(format("%d / %d addons loaded", #topSortedAddons, numAddons))
    end
-
-   -- Update total CPU, total memory, and status
-   local totalPct = GetOverallPct(Enum.AddOnProfilerMetric.RecentAverageTime)
-   topFrame.totalCPU:SetText(format("CPU: %s", FormatPct(totalPct)))
-
-   local totalKB = 0
-   for _, addonIdx in ipairs(topSortedAddons) do
-      totalKB = totalKB + (memUsage[addonIdx] or 0)
-   end
-   topFrame.totalMem:SetText(format("Mem: %s", FormatMemory(totalKB)))
-
-   topFrame.statusBar:SetText(format("%d / %d addons loaded", #topSortedAddons, numAddons))
 end
 
 local function CreateTopFrame()
@@ -549,6 +874,11 @@ local function CreateTopFrame()
 
    f.closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
    f.closeBtn:SetPoint("TOPRIGHT", -2, -2)
+
+   f.snapshotInfoBar = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+   f.snapshotInfoBar:SetPoint("TOPRIGHT", -10, -35)
+   f.snapshotInfoBar:SetTextColor(0.8, 0.8, 0.5)
+   f.snapshotInfoBar:Hide()
 
    f:SetScript("OnShow", function()
       if (GetTime() - lastMemUpdate) >= MEM_UPDATE_INTERVAL then
@@ -640,19 +970,38 @@ local function DismissTooltip()
    tooltipAnchor = nil
 end
 
+local function EnterLiveMode()
+   snapshotMode = false
+   if topTimer then mod:CancelTimer(topTimer) end
+   topTimer = mod:ScheduleRepeatingTimer(UpdateTopWindow, sampleInterval)
+   if topFrame and topFrame.snapToggleBtn then
+      topFrame.snapToggleBtn:SetBackdropColor(0.1, 0.1, 0.1, 0.8)
+      topFrame.snapToggleBtn.text:SetText("On-Load")
+   end
+end
+
 ShowTopWindow = function()
    if not topFrame then
       DismissTooltip()
       CreateTopFrame()
       CreateTopControls()
       CreateTopHeaders()
+      CreateSnapshotHeaders()
       CreateTopScrollArea()
       CreateTopStatusBar()
+      EnterLiveMode()
+      UpdateHeaderArrows()
       UpdateTopWindow()
+      -- Enable [Snap] now if TakeLateSnapshot already fired before the window was opened
+      if snapshotTimeStr and topFrame.snapToggleBtn then
+         topFrame.snapToggleBtn:Enable()
+      end
    elseif topFrame:IsShown() then
       topFrame:Hide()
    else
       DismissTooltip()
+      EnterLiveMode()
+      UpdateHeaderArrows()
       topFrame:Show()
    end
 end
