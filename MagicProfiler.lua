@@ -21,8 +21,10 @@ local profilerAvailable = false
 
 local defaults = {
    profile = {
+      ldbInterval = 3,
       sampleInterval = 3,
       topN = 20,
+      enableSnapshot = true,
    },
    char = {
       reloadInitiatedAt = nil,
@@ -41,8 +43,6 @@ local MEM_UPDATE_INTERVAL = 10
 local lastMemUpdate = 0
 
 -- Timing
-local LDB_SAMPLE_INTERVAL = 3
-
 local sampleInterval = 3
 local sampleTimer = nil
 
@@ -242,18 +242,35 @@ local function BuildOptions()
             order = 0,
             fontSize = "medium",
          },
-         sampleInterval = {
+         ldbInterval = {
             type = "range",
-            name = L["Sample interval"],
-            desc = L["How often to sample and update profiler data, in seconds."],
+            name = L["LDB update interval"],
+            desc = L["How often to update the LDB button text with the current CPU load, in seconds. This runs continuously in the background."],
             min = 1, max = 10, step = 1,
             width = "full",
             order = 1,
+            get = function() return mod.db.profile.ldbInterval end,
+            set = function(_, val)
+               mod.db.profile.ldbInterval = val
+               if not topFrame or not topFrame:IsShown() then
+                  RestartSampleTimer(val)
+               end
+            end,
+         },
+         sampleInterval = {
+            type = "range",
+            name = L["Top window interval"],
+            desc = L["How often to refresh the Top window while it is open, in seconds."],
+            min = 1, max = 10, step = 1,
+            width = "full",
+            order = 2,
             get = function() return mod.db.profile.sampleInterval end,
             set = function(_, val)
                mod.db.profile.sampleInterval = val
                sampleInterval = val
-               RestartSampleTimer(val)
+               if topFrame and topFrame:IsShown() then
+                  RestartSampleTimer(val)
+               end
                for _, b in ipairs(intervalButtons) do
                   if b.interval == val then
                      b:SetBackdropColor(0.2, 0.4, 0.8, 0.8)
@@ -269,10 +286,27 @@ local function BuildOptions()
             desc = L["Maximum number of addons to show in the LDB tooltip."],
             min = 5, max = 50, step = 5,
             width = "full",
-            order = 2,
+            order = 3,
             get = function() return mod.db.profile.topN end,
             set = function(_, val)
                mod.db.profile.topN = val
+            end,
+         },
+         enableSnapshot = {
+            type = "toggle",
+            name = L["Enable load snapshot"],
+            desc = L["Capture on-load CPU usage for all addons. When disabled, snapshot buttons are hidden and no load data is collected."],
+            width = "full",
+            order = 4,
+            get = function() return mod.db.profile.enableSnapshot end,
+            set = function(_, val)
+               mod.db.profile.enableSnapshot = val
+               if not val and snapshotMode then
+                  EnterLiveMode()
+               end
+               if topFrame then
+                  UpdateTopWindow()
+               end
             end,
          },
       },
@@ -309,10 +343,12 @@ end
 
 function mod:OnEnable()
    UpdateSample()
-   mod:ScheduleTimer(TakeEarlySnapshot, 1)
-   mod:ScheduleTimer(TakeLateSnapshot, 5)
-   RestartSampleTimer(LDB_SAMPLE_INTERVAL)
-   if reloadSeconds then
+   if mod.db.profile.enableSnapshot then
+      mod:ScheduleTimer(TakeEarlySnapshot, 1)
+      mod:ScheduleTimer(TakeLateSnapshot, 5)
+   end
+   RestartSampleTimer(mod.db.profile.ldbInterval)
+   if reloadSeconds and mod.db.profile.enableSnapshot then
       mod:ScheduleTimer(function()
          ShowTopWindow()
          snapshotMode = true
@@ -562,6 +598,7 @@ local function CreateTopControls()
       GameTooltip:Show()
    end)
    createSnapBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+   f.createSnapBtn = createSnapBtn
 end
 
 UpdateHeaderArrows = function()
@@ -910,6 +947,12 @@ UpdateTopWindow = function()
 
       topFrame.statusBar:SetText(format("%d / %d addons loaded", #topSortedAddons, numAddons))
    end
+
+   -- Hide snapshot buttons when feature is disabled
+   if not mod.db.profile.enableSnapshot then
+      topFrame.snapToggleBtn:Hide()
+      topFrame.createSnapBtn:Hide()
+   end
 end
 
 local function CreateTopFrame()
@@ -984,8 +1027,8 @@ local function CreateTopFrame()
          mod:CancelTimer(topTimer)
          topTimer = nil
       end
-      sampleInterval = LDB_SAMPLE_INTERVAL
-      RestartSampleTimer(LDB_SAMPLE_INTERVAL)
+      sampleInterval = mod.db.profile.sampleInterval
+      RestartSampleTimer(mod.db.profile.ldbInterval)
    end)
 
    -- Resize grip (bottom-right corner, height only)
