@@ -1,0 +1,14 @@
+## Interface: 120001
+## Title: Magic Profiler
+## Notes: LDB data source showing addon CPU and memory usage
+## Author: NeoTron
+## Version: @project-version@
+## DefaultState: enabled
+## IconTexture: Interface\Icons\INV_Gizmo_02
+## X-Category: Development Tools
+## X-eMail: neotron@gmail.com
+## X-Date: @project-date-integer@
+## OptionalDeps: Ace3, LibDataBroker-1.1, LibQTip-1.0
+
+embeds.xml
+MagicProfiler.lua
