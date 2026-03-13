@@ -4,7 +4,7 @@ local QTIP = LibStub("LibQTip-1.0")
 local AceConfigDialog = LibStub("AceConfigDialog-3.0")
 local AceConfigRegistry = LibStub("AceConfig-3.0")
 
-local mod = LibStub("AceAddon-3.0"):NewAddon("MagicProfiler", "AceTimer-3.0", "AceEvent-3.0")
+local mod = LibStub("AceAddon-3.0"):NewAddon("MagicProfiler", "AceTimer-3.0", "AceEvent-3.0", "LibMagicUtil-1.0")
 
 ----------------------------------------------------------------
 -- State
@@ -1251,7 +1251,8 @@ local dataObj = LDB:NewDataObject("Magic Profiler", {
       if button == "LeftButton" then
          ShowTopWindow()
       elseif button == "RightButton" then
-         AceConfigDialog:Open("Magic Profiler")
+         mod:InterfaceOptionsFrame_OpenToCategory(mod.optionsEnd)
+         mod:InterfaceOptionsFrame_OpenToCategory(mod.optionsMain)
       end
    end,
 
