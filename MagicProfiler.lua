@@ -1061,8 +1061,13 @@ local function CreateTopFrame()
    f:SetBackdropBorderColor(0.6, 0.6, 0.6, 1)
    f:SetFrameStrata("MEDIUM")
 
+   local icon = f:CreateTexture(nil, "OVERLAY")
+   icon:SetSize(24, 24)
+   icon:SetPoint("TOPLEFT", 8, -6)
+   icon:SetTexture("Interface\\AddOns\\MagicProfiler\\icon.png")
+
    f.title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-   f.title:SetPoint("TOPLEFT", 10, -8)
+   f.title:SetPoint("TOPLEFT", 36, -8)
    f.title:SetText("Magic Profiler")
 
    f.closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
