@@ -14,3 +14,4 @@ externals:
     Libs/LibMagicUtil-1.0: https://github.com/neotron/WoW-libMagicUtil.git
     Libs/LibQTip-1.0: https://repos.wowace.com/wow/libqtip-1-0
     Libs/LibDataBroker-1.1: https://github.com/tekkub/libdatabroker-1-1.git
+    Libs/LibDBIcon-1.0: https://repos.wowace.com/wow/libdbicon-1-0/trunk/LibDBIcon-1.0

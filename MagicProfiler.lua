@@ -1,5 +1,6 @@
 local L = LibStub("AceLocale-3.0"):GetLocale("MagicProfiler")
 local LDB = LibStub("LibDataBroker-1.1")
+local LDBIcon = LibStub("LibDBIcon-1.0", true)
 local QTIP = LibStub("LibQTip-1.0")
 local AceConfigDialog = LibStub("AceConfigDialog-3.0")
 local AceConfigRegistry = LibStub("AceConfig-3.0")
@@ -26,6 +27,7 @@ local defaults = {
       sampleInterval = 3,
       topN = 20,
       enableSnapshot = true,
+      minimapIcon = { hide = false },
    },
    char = {
       reloadInitiatedAt = nil,
@@ -65,6 +67,7 @@ local TOP_MAX_ROWS = 50
 local TOP_VISIBLE_ROWS_DEFAULT = 25
 
 local topFrame
+local dataObj
 local topRows = {}
 local topSortColumn = "cpuCurrent"
 local topSortReversed = false
@@ -310,6 +313,22 @@ local function BuildOptions()
                end
             end,
          },
+         hideMinimapButton = {
+            type = "toggle",
+            name = L["Hide minimap button"],
+            desc = L["Hide the minimap button for Magic Profiler."],
+            width = "full",
+            order = 5,
+            hidden = function() return not LDBIcon end,
+            get = function() return mod.db.profile.minimapIcon.hide end,
+            set = function(_, val)
+               mod.db.profile.minimapIcon.hide = val
+               if LDBIcon then
+                  if val then LDBIcon:Hide("Magic Profiler")
+                  else LDBIcon:Show("Magic Profiler") end
+               end
+            end,
+         },
          cmdHeader = {
             type = "header",
             name = L["Commands"],
@@ -353,6 +372,9 @@ function mod:OnInitialize()
    BuildOptions()
    self.optionsMain = self:OptReg("Magic Profiler", options.general)
    self.optionsEnd = self:OptReg(": Profiles", options.profiles, L["Profiles"])
+   if LDBIcon then
+      LDBIcon:Register("Magic Profiler", dataObj, self.db.profile.minimapIcon)
+   end
 end
 
 function mod:OnEnable()
@@ -1320,9 +1342,9 @@ end
 -- LDB data object
 ----------------------------------------------------------------
 
-local dataObj = LDB:NewDataObject("Magic Profiler", {
+dataObj = LDB:NewDataObject("Magic Profiler", {
    type = "data source",
-   icon = "Interface\\Icons\\INV_Gizmo_02",
+   icon = "Interface\\AddOns\\MagicProfiler\\icon.png",
    label = "CPU",
    text = "...",
 

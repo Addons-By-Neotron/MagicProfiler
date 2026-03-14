@@ -4,7 +4,7 @@
 ## Author: NeoTron
 ## Version: @project-version@
 ## DefaultState: enabled
-## IconTexture: Interface\Icons\INV_Gizmo_02
+## IconTexture: Interface\Addons\MagicProfiler\icon.png
 ## X-Category: Development Tools
 ## X-eMail: neotron@gmail.com
 ## X-Date: @project-date-integer@
@@ -14,3 +14,4 @@
 embeds.xml
 Locales.xml
 MagicProfiler.lua
+

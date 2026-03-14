@@ -17,6 +17,9 @@ L["Maximum number of addons to show in the LDB tooltip."] = true
 L["Enable load snapshot"] = true
 L["Capture on-load CPU usage for all addons. When disabled, snapshot buttons are hidden and no load data is collected."] = true
 
+L["Hide minimap button"] = true
+L["Hide the minimap button for Magic Profiler."] = true
+
 -- Options: Profiles
 L["Profiles"] = true
 
