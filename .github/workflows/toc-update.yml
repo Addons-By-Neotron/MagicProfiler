@@ -1,0 +1,31 @@
+name: Update TOC Interface version(s)
+
+on:
+  schedule:
+    - cron: 44 12 * * *
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone project
+        uses: actions/checkout@v4.1.1
+
+      - name: Update TOC Interface version
+        uses: p3lim/toc-interface-updater@v4
+        with:
+          beta: true
+          ptr: true
+          flavor: |
+            retail
+            forever
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v6.0.1
+        with:
+          title: Update Interface version
+          commit-message: Update Interface version
+          branch: interface-version
+          delete-branch: true
+    env:
+      CF_API_KEY: ${{ secrets.CF_API_KEY }}
+      WOWI_API_TOKEN: ${{ secrets.WOWI_API_TOKEN }}
