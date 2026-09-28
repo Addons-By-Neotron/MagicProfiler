@@ -1,4 +1,4 @@
-## Interface: 120001,16001
+## Interface: 120100, 120105, 16001
 ## Title: Magic Profiler
 ## Notes: LDB data source showing addon CPU and memory usage
 ## Author: NeoTron
