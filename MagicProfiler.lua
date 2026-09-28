@@ -123,7 +123,11 @@ local ShowTopWindow, UpdateTopWindow, UpdateHeaderArrows
 ----------------------------------------------------------------
 
 local function GetAppTime(metric)
-   return C_AddOnProfiler.GetApplicationMetric(metric) or 1
+   local app = C_AddOnProfiler.GetApplicationMetric(metric)
+   if not app or app == 0 then
+      return 1
+   end
+   return app
 end
 
 local function GetOverallPct(metric)
